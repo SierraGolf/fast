@@ -11,7 +11,7 @@ const ini = require('ini');
 program
     .version('0.1.0')
     .option('-p, --profile <string>', 'Specify aws profile')
-    .option('-f, --filter [string]', 'Filter results')
+    .option('-f, --filters [string]', 'Result filters', (value) => value.split(','))
     .parse(process.argv);
 
 
@@ -77,8 +77,6 @@ ec2.describeInstances({}, function (error, data) {
 
 
 function processResults(instances) {
-    //console.log(JSON.stringify(instances, null, 2));
-
     instances
         .sort((a, b) => {
 
@@ -91,13 +89,25 @@ function processResults(instances) {
             return a.tags['Name'].localeCompare(b.tags['Name'])
         })
         .filter((instance) => {
-            return Object.values(instance.tags).find((tag) => {
 
-                //console.log(tag + ': ' + (tag.search(program.filter) > -1));
-                return tag.search(program.filter) > -1;
+            const result = program.filters.filter((filter) => {
+                return Object.values(instance.tags).find((tag) => {
+                    return tag.search(filter) > -1;
+                });
             });
+
+            return result.length === program.filters.length;
         })
         .forEach((instance) => {
-            console.log(instance.tags['Name'] + ': ' + instance.privateIp);
+
+            const serializedTags = Object.keys(instance.tags)
+                .sort((a, b) => {
+                    return a.localeCompare(b);
+                })
+                .reduce((accumulator, item) => {
+                    return accumulator + item + ':' + instance.tags[item] + ', ';
+                }, '');
+
+            console.log(instance.privateIp + ', ' + serializedTags);
         });
 }
