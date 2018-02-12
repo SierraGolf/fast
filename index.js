@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-
 const program = require('commander');
 const inquirer = require('inquirer');
+const { exec } = require('child_process');
 const AWS = require('aws-sdk');
 const fs = require('fs');
 const ini = require('ini');
@@ -31,6 +31,7 @@ if (!program.profile) {
     query();
 }
 
+
 function query() {
 
     const ec2 = new AWS.EC2();
@@ -38,14 +39,12 @@ function query() {
     ec2.describeInstances({}, (error, data) => {
         if (error) {
 
-            if (error.code === 'RequestExpired') {
-                // TODO show mfa dialog
-                console.log('You need to re-authenticate.');
+            if (error.code === 'RequestExpired' || error.code === 'UnauthorizedOperation') {
+                queryForMfa();
             } else {
                 console.log(error);
             }
         } else {
-
             const instances = data.Reservations.map((item) => {
                 // TODO when is there more than one?
                 const privateIp = item.Instances[0].NetworkInterfaces[0].PrivateIpAddress;
@@ -62,6 +61,24 @@ function query() {
             });
 
             processResults(instances);
+        }
+    });
+}
+
+function queryForMfa() {
+    exec('aws ec2 describe-instances --profile ' + program.profile, (err, stdout, stderr) => {
+        if (err) {
+            console.log(err);
+            return;
+        }
+
+        if (stdout) {
+            configure();
+            query();
+        } else if (stderr) {
+            console.log(stderr);
+        } else {
+            console.log('How did we get here, no stdout and no stderr');
         }
     });
 }
@@ -95,33 +112,35 @@ function processResults(instances) {
         .forEach((instance) => {
 
             const serializedTags = Object.keys(instance.tags)
-                .sort((a, b) => {
-                    return a.localeCompare(b);
-                })
-                .reduce((accumulator, item) => {
-                    return accumulator + item + ':' + instance.tags[item] + ', ';
-                }, '');
+                                         .sort((a, b) => {
+                                             return a.localeCompare(b);
+                                         })
+                                         .reduce((accumulator, item) => {
+                                             return accumulator + item + ':' + instance.tags[item] + ', ';
+                                         }, '');
 
             console.log(instance.privateIp + ', ' + serializedTags);
         });
 }
 
 function setCredentials() {
-    let configIni = ini.parse(fs.readFileSync(
-        `${process.env.HOME}/.aws/config`,
-        'utf-8'
-    ));
-    let awsProfileConfig = configIni[`profile ${program.profile}`];
+    const configIni = ini.parse(fs.readFileSync(`${process.env.HOME}/.aws/config`, 'utf-8'));
+    const awsProfileConfig = configIni[`profile ${program.profile}`];
     if (awsProfileConfig && awsProfileConfig.role_arn) {
-        let roleArn = awsProfileConfig.role_arn.replace(/:/g, '_').replace(/[^A-Za-z0-9\-_]/g, '-');
-        let awsCliCacheFilename = `${program.profile}--${roleArn}`;
-        let awsCliCache =
-            JSON.parse(fs.readFileSync(
-                `${process.env.HOME}/.aws/cli/cache/${awsCliCacheFilename}.json`,
-                'utf-8'
-            ));
-        let sts = new AWS.STS();
-        AWS.config.credentials = sts.credentialsFrom(awsCliCache, awsCliCache);
+        const roleArn = awsProfileConfig.role_arn.replace(/:/g, '_').replace(/[^A-Za-z0-9\-_]/g, '-');
+        const awsCliCacheFilename = `${program.profile}--${roleArn}`;
+
+        try {
+            const awsCliCache = JSON.parse(fs.readFileSync(`${process.env.HOME}/.aws/cli/cache/${awsCliCacheFilename}.json`, 'utf-8'));
+            const sts = new AWS.STS();
+            AWS.config.credentials = sts.credentialsFrom(awsCliCache, awsCliCache);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                // we do not do anything. the later code of AWS will throw a proper error to require re-authentication
+            } else {
+                throw error;
+            }
+        }
     }
 }
 
