@@ -5,6 +5,8 @@
 * implement ssh
 * implement vpn support (configurable)
 * implement bastion support (configurable)
+* make required options optional and ask for the data
 
 # TODO code
 * setup automated testing
+* refactor into multiple modules

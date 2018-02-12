@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
-// TODO move parts into different locations
-// TODO add hacked mfa support
 
 const program = require('commander');
+const inquirer = require('inquirer');
 const AWS = require('aws-sdk');
 const fs = require('fs');
 const ini = require('ini');
@@ -16,65 +15,56 @@ program
 
 
 if (!program.profile) {
-    console.log('Please specify an aws profile');
-    return;
+
+    inquirer.prompt([{
+        type: 'input',
+        name: 'profile',
+        message: 'Which AWS profile would you like to use?'
+
+    }]).then((answers) => {
+        program.profile = answers.profile;
+        configure();
+        query();
+    });
+} else {
+    configure();
+    query();
 }
 
-AWS.config.region = 'eu-west-1';
-AWS.config.apiVersions = {
-    ec2: '2016-11-15'
-};
+function query() {
 
-let configIni = ini.parse(fs.readFileSync(
-    `${process.env.HOME}/.aws/config`,
-    'utf-8'
-));
-let awsProfileConfig = configIni[`profile ${program.profile}`];
-if (awsProfileConfig && awsProfileConfig.role_arn) {
-    let roleArn = awsProfileConfig.role_arn.replace(/:/g, '_').replace(/[^A-Za-z0-9\-_]/g, '-');
-    let awsCliCacheFilename = `${program.profile}--${roleArn}`;
-    let awsCliCache =
-        JSON.parse(fs.readFileSync(
-            `${process.env.HOME}/.aws/cli/cache/${awsCliCacheFilename}.json`,
-            'utf-8'
-        ));
-    let sts = new AWS.STS();
-    AWS.config.credentials = sts.credentialsFrom(awsCliCache, awsCliCache);
+    const ec2 = new AWS.EC2();
+
+    ec2.describeInstances({}, (error, data) => {
+        if (error) {
+
+            if (error.code === 'RequestExpired') {
+                // TODO show mfa dialog
+                console.log('You need to re-authenticate.');
+            } else {
+                console.log(error);
+            }
+        } else {
+
+            const instances = data.Reservations.map((item) => {
+                // TODO when is there more than one?
+                const privateIp = item.Instances[0].NetworkInterfaces[0].PrivateIpAddress;
+                const tags = item.Instances[0].Tags
+                                              .reduce((accumulator, item) => {
+                                                  accumulator[item.Key] = item.Value;
+                                                  return accumulator;
+                                              }, {});
+
+                return {
+                    privateIp: privateIp,
+                    tags: tags
+                };
+            });
+
+            processResults(instances);
+        }
+    });
 }
-
-
-const ec2 = new AWS.EC2();
-
-ec2.describeInstances({}, function (error, data) {
-    if (error) {
-        console.log(error, error.stack);
-    } else {
-
-        const instances = data.Reservations.map((item) => {
-            // TODO when is there more than one?
-            const privateIp = item.Instances[0].NetworkInterfaces[0].PrivateIpAddress;
-            const tags = item.Instances[0].Tags
-                                          //.map((item) => {
-                                          //    const tag = {};
-                                          //    tag[item.Key] = item.Value;
-                                          //    return tag;
-                                          //})
-                                          .reduce((accumulator, item) => {
-                                              //console.log(item);
-                                              accumulator[item.Key] = item.Value;
-                                              return accumulator;
-                                          }, {});
-
-            return {
-                privateIp: privateIp,
-                tags: tags
-            };
-        });
-
-        processResults(instances);
-    }
-});
-
 
 function processResults(instances) {
     instances
@@ -89,6 +79,10 @@ function processResults(instances) {
             return a.tags['Name'].localeCompare(b.tags['Name'])
         })
         .filter((instance) => {
+
+            if (!program.filters) {
+                return true;
+            }
 
             const result = program.filters.filter((filter) => {
                 return Object.values(instance.tags).find((tag) => {
@@ -110,4 +104,32 @@ function processResults(instances) {
 
             console.log(instance.privateIp + ', ' + serializedTags);
         });
+}
+
+function setCredentials() {
+    let configIni = ini.parse(fs.readFileSync(
+        `${process.env.HOME}/.aws/config`,
+        'utf-8'
+    ));
+    let awsProfileConfig = configIni[`profile ${program.profile}`];
+    if (awsProfileConfig && awsProfileConfig.role_arn) {
+        let roleArn = awsProfileConfig.role_arn.replace(/:/g, '_').replace(/[^A-Za-z0-9\-_]/g, '-');
+        let awsCliCacheFilename = `${program.profile}--${roleArn}`;
+        let awsCliCache =
+            JSON.parse(fs.readFileSync(
+                `${process.env.HOME}/.aws/cli/cache/${awsCliCacheFilename}.json`,
+                'utf-8'
+            ));
+        let sts = new AWS.STS();
+        AWS.config.credentials = sts.credentialsFrom(awsCliCache, awsCliCache);
+    }
+}
+
+function configure() {
+    AWS.config.region = 'eu-west-1';
+    AWS.config.apiVersions = {
+        ec2: '2016-11-15'
+    };
+
+    setCredentials();
 }
