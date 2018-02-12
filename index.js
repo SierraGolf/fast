@@ -84,7 +84,7 @@ function queryForMfa() {
 }
 
 function processResults(instances) {
-    instances
+    const processedInstances = instances
         .sort((a, b) => {
 
             if (!a.tags['Name']) {
@@ -109,18 +109,36 @@ function processResults(instances) {
 
             return result.length === program.filters.length;
         })
-        .forEach((instance) => {
+        .map((instance) => {
 
             const serializedTags = Object.keys(instance.tags)
                                          .sort((a, b) => {
                                              return a.localeCompare(b);
                                          })
                                          .reduce((accumulator, item) => {
-                                             return accumulator + item + ':' + instance.tags[item] + ', ';
+                                             let separator = '';
+                                             if (accumulator) {
+                                                 separator = ', ';
+                                             }
+                                             return accumulator + separator + item + ':' + instance.tags[item];
                                          }, '');
 
-            console.log(instance.privateIp + ', ' + serializedTags);
+            return {
+                name: instance.privateIp + ' [' + serializedTags + ']',
+                short: instance.privateIp,
+                value: instance.privateIp
+            };
         });
+
+
+    inquirer.prompt([{
+        type: 'checkbox',
+        name: 'servers',
+        message: 'Select server(s)',
+        choices: processedInstances
+    }]).then((answers) => {
+        console.log(answers.servers)
+    });
 }
 
 function setCredentials() {
