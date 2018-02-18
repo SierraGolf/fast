@@ -7,25 +7,53 @@ const AWS = require('aws-sdk');
 const fs = require('fs');
 const ini = require('ini');
 
+const commaSplitter = (value) => value.split(',');
+
 program
     .version('0.1.0')
     .option('-p, --profile <string>', 'Specify aws profile')
-    .option('-f, --filters [string]', 'Result filters', (value) => value.split(','))
+    .option('-f, --filters [string]', 'Result filters', commaSplitter)
     .parse(process.argv);
 
+// TODO validate arguments
 
-if (!program.profile) {
+if (!program.profile || !program.filters) {
 
-    inquirer.prompt([{
-        type: 'input',
-        name: 'profile',
-        message: 'Which AWS profile would you like to use?'
+    const questions = [];
 
-    }]).then((answers) => {
-        program.profile = answers.profile;
+    if (!program.profile) {
+        // TODO validate that there is a value and that it exists
+        questions.push({
+            type: 'input',
+            name: 'profile',
+            message: 'Which AWS profile would you like to use?'
+
+        });
+    }
+
+    if (!program.filters) {
+        // TODO validate
+        questions.push({
+            type: 'input',
+            name: 'filters',
+            message: 'Would you like to filter the results? (comma separate your keywords)'
+        });
+    }
+
+    inquirer.prompt(questions).then((answers) => {
+
+        if (answers.profile) {
+            program.profile = answers.profile;
+        }
+
+        if (answers.filters) {
+            program.filters = commaSplitter(answers.filters);
+        }
+
         configure();
         query();
     });
+
 } else {
     configure();
     query();
@@ -47,17 +75,23 @@ function query() {
         } else {
             const instances = data.Reservations.map((item) => {
                 // TODO when is there more than one?
-                const privateIp = item.Instances[0].NetworkInterfaces[0].PrivateIpAddress;
-                const tags = item.Instances[0].Tags
+                const data = item.Instances[0].Tags
                                               .reduce((accumulator, item) => {
                                                   accumulator[item.Key] = item.Value;
                                                   return accumulator;
                                               }, {});
 
-                return {
-                    privateIp: privateIp,
-                    tags: tags
-                };
+                data.instanceId = item.Instances[0].InstanceId;
+
+                if (item.Instances[0].NetworkInterfaces[0]) {
+                    data.privateIp = item.Instances[0].NetworkInterfaces[0].PrivateIpAddress;
+                }
+
+                if (item.Instances[0].PublicIpAddress) {
+                    data.publicIp = item.Instances[0].PublicIpAddress;
+                }
+
+                return data;
             });
 
             processResults(instances);
@@ -84,16 +118,17 @@ function queryForMfa() {
 }
 
 function processResults(instances) {
+
     const processedInstances = instances
         .sort((a, b) => {
 
-            if (!a.tags['Name']) {
+            if (!a['Name']) {
                 return 1;
-            } else if (!b.tags['Name']) {
+            } else if (!b['Name']) {
                 return -1;
             }
 
-            return a.tags['Name'].localeCompare(b.tags['Name'])
+            return a['Name'].localeCompare(b['Name'])
         })
         .filter((instance) => {
 
@@ -102,8 +137,8 @@ function processResults(instances) {
             }
 
             const result = program.filters.filter((filter) => {
-                return Object.values(instance.tags).find((tag) => {
-                    return tag.search(filter) > -1;
+                return Object.values(instance).find((field) => {
+                    return field.search(filter) > -1;
                 });
             });
 
@@ -111,34 +146,41 @@ function processResults(instances) {
         })
         .map((instance) => {
 
-            const serializedTags = Object.keys(instance.tags)
-                                         .sort((a, b) => {
-                                             return a.localeCompare(b);
-                                         })
-                                         .reduce((accumulator, item) => {
-                                             let separator = '';
-                                             if (accumulator) {
-                                                 separator = ', ';
-                                             }
-                                             return accumulator + separator + item + ':' + instance.tags[item];
-                                         }, '');
+            const serializedFields = Object.keys(instance)
+                                           .filter((item) => {
+                                               // already used as the "key"
+                                               return item !== 'instanceId'
+                                           })
+                                           .sort((a, b) => {
+                                               return a.localeCompare(b);
+                                           })
+                                           .reduce((accumulator, item) => {
+                                               let separator = '';
+                                               if (accumulator) {
+                                                   separator = ', ';
+                                               }
+                                               return accumulator + separator + item + ':' + instance[item];
+                                           }, '');
 
             return {
-                name: instance.privateIp + ' [' + serializedTags + ']',
-                short: instance.privateIp,
-                value: instance.privateIp
+                name: instance.instanceId + ' [' + serializedFields + ']',
+                short: instance.instanceId,
+                value: instance.instanceId
             };
         });
 
-
-    inquirer.prompt([{
-        type: 'checkbox',
-        name: 'servers',
-        message: 'Select server(s)',
-        choices: processedInstances
-    }]).then((answers) => {
-        console.log(answers.servers)
-    });
+    if (processedInstances.length === 0) {
+        console.log('Your query did not yield any results.');
+    } else {
+        inquirer.prompt([{
+            type: 'checkbox',
+            name: 'servers',
+            message: 'Select server(s)',
+            choices: processedInstances
+        }]).then((answers) => {
+            console.log(answers.servers)
+        });
+    }
 }
 
 function setCredentials() {
